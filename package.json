@@ -17,6 +17,7 @@
     }
   },
   "exports": {
+    ".": "./sprint-live/index.js",
     "./client": "./sprint-live/client.js"
   },
   "license": "MIT",
