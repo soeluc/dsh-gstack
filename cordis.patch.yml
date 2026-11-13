@@ -1,0 +1,184 @@
+# @local/dsh-gstack
+#
+# 1) Raise the tool-result spill budget so 60 KB gstack skills load intact
+#    (default 12,500 tokens cut review/ship/retro).
+# 2) Let a workspace-write session reach the tool caches gstack and Go need:
+#    ~/.gstack (state, review log, gate artifacts), the Go module/build caches.
+#    Without these, /review silently degrades: gate scan UNAVAILABLE, review
+#    records lost, `go build ./...` blocked at $GOMODCACHE.
+# 3) Declare a `gstack` agent preset: gstack Lead persona + rendered skills +
+#    subagent/workflow delegation + plan mode. Installed into the live profile
+#    with plugin_manager install_bundle; never edit the profile by hand.
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+    # Only directories that exist on THIS machine: a missing root makes every
+    # sandboxed bash/write fail at initialization. Candidates cover macOS,
+    # Linux and Windows; absent ones are filtered out at load.
+    additionalWritableRoots: !!js >
+      (() => {
+        const fs = process.getBuiltinModule('node:fs');
+        const os = process.getBuiltinModule('node:os');
+        const path = process.getBuiltinModule('node:path');
+        const home = os.homedir();
+        const candidates = [
+          path.join(home, '.gstack'),
+          path.join(home, 'go', 'pkg', 'mod'),
+          path.join(home, 'Library', 'Caches', 'go-build'),
+          path.join(home, '.cache', 'go-build'),
+          process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'go-build') : '',
+        ].filter(Boolean);
+        return candidates.filter((dir) => { try { return fs.statSync(dir).isDirectory() } catch { return false } });
+      })()
+
+- id: spill-policy
+  name: '@deepseek-ai/dsh-spill-policy'
+  config:
+    maxInlineTokens: 24000
+
+# Team mode is off for new root Sessions by default (rc.2). Turn it on for
+# gstack sprints; the task tools appear when the root's selection is on.
+- id: agent-team
+  name: '@deepseek-ai/dsh-agent-team'
+  config:
+    maxTasks: 256
+    defaultEnabled: true
+
+- insert:
+    - id: preset-gstack
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: gstack
+        name: gstack
+        description: >-
+          gstack 超级团队：Think → Plan → Build → Review → Test → Ship。
+          12 个一级技能（office-hours/review/qa/ship/cso/...）+ 全量 router，
+          团队角色由 Lead 通过 subagent 派发，计划与发布保留人审门。
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                You are the gstack Lead: a founder and release manager running one sprint at a time
+                (Think → Plan → Build → Review → Test → Ship → Reflect) inside DeepSeek Harness.
+                Keep the sprint board under .gstack/sprint/<id>/; dispatch specialists as subagents;
+                gate the plan and the ship on explicit human approval; never claim evidence you did
+                not produce. Load a gstack skill with the skill tool, or invoke /name, before acting.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js (process.env.DSH_HOME || ((process.env.HOME || process.env.USERPROFILE) + '/.dsh')) + '/gstack/skills'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Explore first with non-mutating reads, searches and checks.
+                    Do not edit files, change configuration, run formatters that rewrite tracked files,
+                    commit, or otherwise carry out the plan. Make the plan decision-complete: goal and
+                    success criteria; changes grouped by subsystem; API/schema/data-flow changes; edge
+                    cases, failure modes, tests, acceptance criteria and explicit assumptions. When ready,
+                    call exit_plan_mode with the complete plan markdown, starting with a # title. A user's
+                    conversational agreement approves nothing; only the exit_plan_mode review does.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              # rc.2: Team has no spawn/message tools of its own. Teammates are
+              # ordinary subagents; send_message/list_agents/wait_agent come from
+              # this control plugin, and team_task_* comes from the host.
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+                config:
+                  interrupt: true
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+# Host-wide tool guard: denies edit/write outside the directory recorded in
+# $GSTACK_STATE_ROOT/freeze-dir.txt while a gstack /freeze is active.
+- insert:
+    - id: gstack-freeze-guard
+      name: './freeze-guard/index.js'
+
+# Live Sprint panel: host route + client dock strip.
+- insert:
+    - id: gstack-sprint-live
+      name: './sprint-live/index.js'

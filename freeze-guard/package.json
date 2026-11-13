@@ -1,0 +1,8 @@
+{
+  "name": "@local/dsh-gstack-freeze",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "Deny edit/write outside the gstack freeze directory while a freeze is active"
+}

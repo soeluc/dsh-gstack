@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: |
+          node --check render.mjs
+          node --check sprint-check.mjs
+          node --check sprint-dashboard.mjs
+          node --check sprint-panel.mjs
+          node --check scripts/setup.mjs
+          node --check sprint-live/index.js
+          node --check sprint-live/client.js
+          node --check freeze-guard/index.js
+      - name: Unit tests
+        run: node --test test/*.test.mjs
