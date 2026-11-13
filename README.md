@@ -1,5 +1,7 @@
 # dsh-gstack
 
+[![ci](https://github.com/soeluc/dsh-gstack/actions/workflows/ci.yml/badge.svg)](https://github.com/soeluc/dsh-gstack/actions/workflows/ci.yml)
+
 **gstack 超级团队，跑在 DeepSeek Harness 上。**
 
 把 [gstack](https://github.com/garrytan/gstack) 的 60+ 个工程技能、角色化流程和证据纪律，接成 DSH 原生的一套工作方式：一个 `gstack` agent preset、8 份角色任务书、Agent Teams 协作、`/sprint` 全流程、产物级证据检查、常驻 Sprint 面板、`/freeze` 强制守卫，以及 gstack 自带的 headless Chromium。
@@ -22,6 +24,10 @@
 | 常驻面板 | 输入框上方的 Live Sprint 状态条，5 秒刷新，点开是完整面板 |
 | 安全 | `/freeze` 工具级守卫；sandbox 可写根自动探测 |
 | 浏览器 | `/browse`、`/qa` 走 gstack 自带 Chromium |
+
+![Sprint panel](docs/assets/sprint-panel.png)
+
+> 常驻面板：输入框上方的 SPRINT 状态条，点开是阶段、任务、findings、产物和合同状态。
 
 ---
 
