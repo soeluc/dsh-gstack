@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { collectSprints } from '../sprint-live/index.js'
+import { collectSprints, discoverSprintBases } from '../sprint-live/index.js'
 
-test('collectSprints summarizes boards and findings for the live panel', () => {
+test('collectSprints summarizes boards and findings for the live panel', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprint-live-'))
   const dir = path.join(root, '.gstack', 'sprint', 'demo')
   fs.mkdirSync(dir, { recursive: true })
@@ -30,10 +30,13 @@ test('collectSprints summarizes boards and findings for the live panel', () => {
     const ctx = {
       workspaceRegistry: { list: () => [{ directory: root, title: 'demo-ws' }] },
       workingDirectory: { defaultDirectory: '' },
+      sessions: { list: () => [] },
+      sessionPersistence: { list: async () => [] },
     }
-    const sprints = collectSprints(ctx)
-    assert.equal(sprints.length, 1)
-    const s = sprints[0]
+    const result = await collectSprints(ctx)
+    assert.equal(result.sprints.length, 1)
+    assert.deepEqual(result.roots, [root])
+    const s = result.sprints[0]
     assert.equal(s.id, 'demo')
     assert.equal(s.phase, 'review')
     assert.equal(s.counts.tasks, 2)
@@ -43,6 +46,20 @@ test('collectSprints summarizes boards and findings for the live panel', () => {
     assert.equal(s.artifacts['design.md'], true)
     assert.equal(s.artifacts['qa.md'], false)
     assert.equal(s.tasks[0].artifactExists, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('discoverSprintBases finds nested project sprints without descending forever', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprint-discovery-'))
+  const nested = path.join(root, 'active', 'saas', 'service', '.gstack', 'sprint', 'demo')
+  fs.mkdirSync(nested, { recursive: true })
+  fs.mkdirSync(path.join(root, 'node_modules', 'ignored', '.gstack', 'sprint'), { recursive: true })
+  try {
+    const bases = discoverSprintBases(root, 4, 0)
+    assert.deepEqual(bases, [path.join(root, 'active', 'saas', 'service', '.gstack', 'sprint')])
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

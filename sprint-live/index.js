@@ -9,10 +9,40 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 export const name = 'gstack-sprint-live'
-export const inject = ['webServer', 'workspaceRegistry', 'workingDirectory']
+export const inject = ['webServer', 'workspaceRegistry', 'workingDirectory', 'sessions', 'sessionPersistence']
 
 const PHASES = ['intake', 'design', 'plan', 'plan-review', 'build', 'review', 'qa', 'ship', 'done']
 const ARTIFACTS = ['design.md', 'plan.md', 'review.json', 'security.md', 'qa.md', 'ship.md']
+
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor', 'target', '.cache', 'Library', '.Trash', '.npm', '.pnpm-store'])
+const baseCache = new Map()
+
+/** Find `.gstack/sprint` directories under a workspace root, bounded and cached. */
+export function discoverSprintBases(root, maxDepth = 4, now = Date.now()) {
+  const cached = baseCache.get(root)
+  if (cached && now - cached.at < 30_000) return cached.bases
+  const bases = []
+  let visited = 0
+  const walk = (dir, depth) => {
+    if (visited > 2000) return
+    visited += 1
+    const sprint = path.join(dir, '.gstack', 'sprint')
+    try { if (fs.statSync(sprint).isDirectory()) bases.push(sprint) } catch {}
+    if (depth >= maxDepth) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (SKIP_DIRS.has(entry.name)) continue
+      if (entry.name.startsWith('.') && entry.name !== '.gstack') continue
+      walk(path.join(dir, entry.name), depth + 1)
+    }
+  }
+  walk(root, 0)
+  baseCache.set(root, { at: now, bases })
+  return bases
+}
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
@@ -79,33 +109,44 @@ function summarize(dir, workspaceLabel) {
   }
 }
 
-export function collectSprints(ctx) {
+export async function collectSprints(ctx) {
   const roots = new Map()
+  const errors = []
+  const addRoot = (dir, label) => {
+    if (typeof dir === 'string' && dir && !roots.has(dir)) roots.set(dir, label || path.basename(dir))
+  }
   try {
-    for (const w of ctx.workspaceRegistry.list()) {
-      const dir = w.directory || w.path || w.root
-      if (typeof dir === 'string' && dir) roots.set(dir, w.title || path.basename(dir))
-    }
-  } catch {}
+    for (const w of ctx.workspaceRegistry.list()) addRoot(w.directory || w.path || w.root, w.title)
+  } catch (error) { errors.push(`workspaceRegistry: ${error.message}`) }
+  try {
+    for (const session of ctx.sessions.list()) addRoot(session.header?.cwd)
+  } catch (error) { errors.push(`sessions: ${error.message}`) }
+  try {
+    for (const snapshot of await ctx.sessionPersistence.list()) addRoot(snapshot.header?.cwd)
+  } catch (error) { errors.push(`sessionPersistence: ${error.message}`) }
   try {
     const fallback = ctx.workingDirectory?.defaultDirectory
-    if (typeof fallback === 'string' && fallback && !roots.has(fallback)) roots.set(fallback, path.basename(fallback))
+    addRoot(fallback)
+  } catch {}
+  try {
+    for (const dir of (process.env.GSTACK_SPRINT_ROOTS || '').split(path.delimiter)) addRoot(dir.trim())
   } catch {}
 
   const sprints = []
   for (const [root, label] of roots) {
-    const base = path.join(root, '.gstack', 'sprint')
-    let entries = []
-    try {
-      entries = fs.readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory())
-    } catch { continue }
-    for (const entry of entries) {
-      const summary = summarize(path.join(base, entry.name), label)
-      if (summary) sprints.push(summary)
+    for (const base of discoverSprintBases(root)) {
+      let entries = []
+      try {
+        entries = fs.readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory())
+      } catch { continue }
+      for (const entry of entries) {
+        const summary = summarize(path.join(base, entry.name), label)
+        if (summary) sprints.push(summary)
+      }
     }
   }
   sprints.sort((a, b) => b.mtime - a.mtime)
-  return sprints.slice(0, 20)
+  return { sprints: sprints.slice(0, 20), roots: [...roots.keys()], errors }
 }
 
 export function apply(ctx) {
@@ -115,9 +156,10 @@ export function apply(ctx) {
     handler: async (_req, res) => {
       let body
       try {
-        body = JSON.stringify({ generatedAt: new Date().toISOString(), sprints: collectSprints(ctx) })
+        const result = await collectSprints(ctx)
+        body = JSON.stringify({ generatedAt: new Date().toISOString(), ...result })
       } catch (error) {
-        body = JSON.stringify({ generatedAt: new Date().toISOString(), sprints: [], error: String(error) })
+        body = JSON.stringify({ generatedAt: new Date().toISOString(), sprints: [], roots: [], errors: [String(error)] })
       }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',

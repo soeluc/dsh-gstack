@@ -181,7 +181,11 @@ window.__ModuleLoader__.load({
         sprint ? h('span', { style: { color: C.muted } }, `${sprint.counts.done}/${sprint.counts.tasks} tasks`) : null,
         sprint ? chip(`${sprint.counts.findings} findings`, sprint.counts.critical ? C.bad : sprint.counts.major ? C.warn : C.muted) : null,
         sprint ? h('span', { style: { color: C.muted } }, `gate ${sprint.gate}`) : null,
-        !sprint && !error ? h('span', { style: { color: C.muted } }, 'no sprint yet — run /sprint <goal>') : null,
+        !sprint && !error ? h('span', {
+          style: { color: C.muted },
+          title: (data && Array.isArray(data.roots)) ? data.roots.join('\n') : '',
+        }, `no sprint in ${(data && Array.isArray(data.roots)) ? data.roots.length : 0} roots — run /sprint <goal>`) : null,
+        data && Array.isArray(data.errors) && data.errors.length ? h('span', { style: { color: C.warn } }, `scan: ${data.errors.join('; ')}`) : null,
         error ? h('span', { style: { color: C.bad } }, `panel: ${error}`) : null,
         sprints.length > 1 ? h('select', {
           value: sel,
@@ -199,7 +203,7 @@ window.__ModuleLoader__.load({
           disabled: !sprint, 'aria-expanded': open,
           title: open ? 'Collapse' : 'Expand',
           style: { background: 'transparent', color: sprint ? C.text : C.muted, border: `1px solid ${C.border}`, borderRadius: 6, cursor: sprint ? 'pointer' : 'default', fontSize: 11, padding: '0 6px', lineHeight: '18px' },
-        }, open ? 'Collapse' : 'Details'),
+        }, !sprint ? 'No sprint' : open ? 'Collapse' : 'Details'),
       )
 
       if (!sprint) return bar
