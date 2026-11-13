@@ -4,6 +4,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const { useState, useEffect, useCallback } = React
+    let ReactDOM = null
+    try { ReactDOM = require('react-dom') } catch {}
 
     const PHASES = ['intake', 'design', 'plan', 'plan-review', 'build', 'review', 'qa', 'ship', 'done']
     const C = {
@@ -12,11 +14,35 @@ window.__ModuleLoader__.load({
       border: 'var(--dsw-alias-border-l1)',
       surface: 'var(--dsw-alias-bg-layer-1)',
       surface2: 'var(--dsw-alias-bg-layer-2)',
+      overlay: 'var(--dsw-alias-bg-overlay)',
       brand: 'var(--dsw-alias-brand-primary)',
       ok: 'var(--dsw-alias-state-success-primary)',
       warn: 'var(--dsw-alias-state-warn-primary)',
       bad: 'var(--dsw-alias-state-error-primary)',
       idle: 'var(--dsw-alias-state-idle-primary)',
+    }
+
+    // Expansion lives outside React state: the dock item can remount when the
+    // conversation repaints, and a local useState would silently reset.
+    let openFlag = false
+    const openListeners = new Set()
+    function setOpen(next) {
+      openFlag = typeof next === 'function' ? next(openFlag) : next
+      for (const listener of openListeners) listener()
+    }
+    function useOpen() {
+      const [, force] = useState(0)
+      useEffect(() => {
+        const listener = () => force((n) => n + 1)
+        openListeners.add(listener)
+        return () => openListeners.delete(listener)
+      }, [])
+      return [openFlag, setOpen]
+    }
+
+    function Overlay(props) {
+      if (ReactDOM && ReactDOM.createPortal) return ReactDOM.createPortal(props.children, document.body)
+      return props.children
     }
 
     const chip = (text, color) => h('span', {
@@ -68,9 +94,75 @@ window.__ModuleLoader__.load({
       return { data, error, updated, reload: load }
     }
 
+    function Section(props) {
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h('div', { style: { fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' } }, props.title),
+        props.children)
+    }
+
+    function Details(props) {
+      const s = props.sprint
+      const phase = h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
+        PHASES.map((p, i) => chip(p, i < s.phaseIndex ? C.ok : i === s.phaseIndex ? C.brand : C.muted)))
+
+      const tasks = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+        s.tasks.length ? s.tasks.map((t) => h('div', {
+          key: t.id, style: { display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 11 },
+        },
+          h('code', { style: { color: C.text, minWidth: 90 } }, t.id),
+          chip(t.state, stateColor(t.state)),
+          h('span', { style: { color: C.muted } }, t.owner || '—'),
+          h('span', { style: { color: C.muted, marginLeft: 'auto' } },
+            t.artifact ? `${t.artifact}${t.artifactExists === false ? ' ✗' : t.artifactExists ? ' ✓' : ''}` : ''),
+        )) : h('div', { style: { color: C.muted, fontSize: 11 } }, 'no tasks'))
+
+      const findings = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+        s.findings.length ? s.findings.map((f, i) => h('div', {
+          key: `${f.file}:${f.line}:${i}`, style: { fontSize: 11, display: 'flex', gap: 6, alignItems: 'baseline' },
+        },
+          chip(f.severity, sevColor(f.severity)),
+          h('code', { style: { color: C.muted } }, `${f.file}${f.line ? ':' + f.line : ''}`),
+          h('span', { style: { color: C.text } }, f.issue),
+        )) : h('div', { style: { color: C.muted, fontSize: 11 } }, 'no findings'))
+
+      const artifacts = h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11 } },
+        Object.entries(s.artifacts).map(([name, ok]) => h('span', {
+          key: name, style: { color: ok ? C.ok : C.muted },
+        }, `${ok ? '✓' : '○'} ${name}`)))
+
+      return h('div', {
+        onClick: (e) => e.stopPropagation(),
+        style: {
+          position: 'fixed', left: '50%', bottom: 96, transform: 'translateX(-50%)',
+          width: 'min(760px, calc(100vw - 32px))', maxHeight: 'min(60vh, 520px)', overflow: 'auto',
+          background: C.overlay, color: C.text, border: `1px solid ${C.border}`, borderRadius: 14,
+          boxShadow: '0 16px 48px rgba(0,0,0,.28)', padding: 14, zIndex: 2147483001,
+        },
+      },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 } },
+          h('div', { style: { fontWeight: 650, fontSize: 13 } }, `${s.workspace} · ${s.id}`),
+          chip(s.phase, C.brand),
+          chip(`${s.counts.findings} findings`, s.counts.critical ? C.bad : s.counts.major ? C.warn : C.muted),
+          h('span', { style: { color: C.muted, fontSize: 11 } }, `gate ${s.gate}`),
+          h('button', {
+            type: 'button', onClick: () => setOpen(false),
+            style: { marginLeft: 'auto', background: 'transparent', color: C.muted, border: `1px solid ${C.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, padding: '0 8px', lineHeight: '20px' },
+          }, 'close')),
+        h('div', { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, s.goal || '—'),
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 } },
+          h(Section, { title: 'phase' }, phase),
+          h(Section, { title: 'tasks' }, tasks),
+          h(Section, { title: 'findings' }, findings),
+          h(Section, { title: 'artifacts' }, artifacts),
+          h(Section, { title: 'contract' },
+            h('div', { style: { fontSize: 11, color: s.contract === 'verified' ? C.ok : C.warn } },
+              `${s.contract} · specialists: ${s.specialists.join(', ') || 'none'} · adversarial: ${s.adversarial ? 'yes' : 'no'}`)),
+        ))
+    }
+
     function SprintDock() {
       const { data, error, updated, reload } = useSprints()
-      const [open, setOpen] = useState(false)
+      const [open, setOpen] = useOpen()
       const [sel, setSel] = useState(0)
       const sprints = (data && Array.isArray(data.sprints)) ? data.sprints : []
       const sprint = sprints[Math.min(sel, Math.max(0, sprints.length - 1))]
@@ -80,7 +172,7 @@ window.__ModuleLoader__.load({
           display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
           padding: '5px 10px', margin: '0 10px 6px', borderRadius: 10,
           border: `1px solid ${C.border}`, background: C.surface, color: C.text,
-          fontSize: 12, lineHeight: '18px',
+          fontSize: 12, lineHeight: '18px', position: 'relative', zIndex: 1,
         },
       },
         h('span', { style: { fontWeight: 600, letterSpacing: '.02em' } }, 'SPRINT'),
@@ -98,67 +190,26 @@ window.__ModuleLoader__.load({
         }, sprints.map((s, i) => h('option', { key: s.dir, value: i }, `${s.workspace} · ${s.id}`))) : h('span', { style: { marginLeft: 'auto' } }),
         h('span', { style: { color: C.muted, fontSize: 11 } }, updated ? `updated ${updated}` : ''),
         h('button', {
-          type: 'button', onClick: () => reload(),
+          type: 'button', onPointerDown: (e) => e.stopPropagation(), onClick: () => reload(),
           title: 'Refresh now',
           style: { background: 'transparent', color: C.muted, border: `1px solid ${C.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, padding: '0 6px', lineHeight: '18px' },
         }, '↻'),
         h('button', {
-          type: 'button', onClick: () => setOpen((v) => !v), disabled: !sprint,
+          type: 'button', onPointerDown: (e) => e.stopPropagation(), onClick: () => setOpen((v) => !v),
+          disabled: !sprint, 'aria-expanded': open,
           title: open ? 'Collapse' : 'Expand',
           style: { background: 'transparent', color: sprint ? C.text : C.muted, border: `1px solid ${C.border}`, borderRadius: 6, cursor: sprint ? 'pointer' : 'default', fontSize: 11, padding: '0 6px', lineHeight: '18px' },
-        }, open ? '▾' : '▸'),
+        }, open ? 'Collapse' : 'Details'),
       )
 
-      if (!open || !sprint) return bar
-
-      const phase = h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
-        PHASES.map((p, i) => chip(p, i < sprint.phaseIndex ? C.ok : i === sprint.phaseIndex ? C.brand : C.muted)))
-
-      const tasks = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
-        sprint.tasks.length ? sprint.tasks.map((t) => h('div', {
-          key: t.id, style: { display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 11 },
-        },
-          h('code', { style: { color: C.text, minWidth: 90 } }, t.id),
-          chip(t.state, stateColor(t.state)),
-          h('span', { style: { color: C.muted } }, t.owner || '—'),
-          h('span', { style: { color: C.muted, marginLeft: 'auto' } }, t.artifact ? `${t.artifact}${t.artifactExists === false ? ' ✗' : t.artifactExists ? ' ✓' : ''}` : ''),
-        )) : h('div', { style: { color: C.muted, fontSize: 11 } }, 'no tasks'))
-
-      const findings = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
-        sprint.findings.length ? sprint.findings.map((f, i) => h('div', {
-          key: `${f.file}:${f.line}:${i}`, style: { fontSize: 11, display: 'flex', gap: 6, alignItems: 'baseline' },
-        },
-          chip(f.severity, sevColor(f.severity)),
-          h('code', { style: { color: C.muted } }, `${f.file}${f.line ? ':' + f.line : ''}`),
-          h('span', { style: { color: C.text } }, f.issue),
-        )) : h('div', { style: { color: C.muted, fontSize: 11 } }, 'no findings'))
-
-      const artifacts = h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11 } },
-        Object.entries(sprint.artifacts).map(([name, ok]) => h('span', {
-          key: name, style: { color: ok ? C.ok : C.muted },
-        }, `${ok ? '✓' : '○'} ${name}`)))
-
-      const section = (title, body) => h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        h('div', { style: { fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' } }, title),
-        body)
-
-      return h('div', { style: { margin: '0 10px 8px' } }, bar,
+      if (!sprint) return bar
+      return h('div', null, bar, open ? h(Overlay, null,
         h('div', {
-          style: {
-            border: `1px solid ${C.border}`, borderTop: 'none', borderRadius: '0 0 10px 10px',
-            background: C.surface, padding: 10, display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12,
-            maxHeight: 320, overflow: 'auto',
-          },
-        },
-          section('goal', h('div', { style: { fontSize: 12, color: C.text } }, sprint.goal || '—')),
-          section('phase', phase),
-          section('tasks', tasks),
-          section('findings', findings),
-          section('artifacts', artifacts),
-          section('contract', h('div', { style: { fontSize: 11, color: sprint.contract === 'verified' ? C.ok : C.warn } },
-            `${sprint.contract} · specialists: ${sprint.specialists.join(', ') || 'none'} · adversarial: ${sprint.adversarial ? 'yes' : 'no'}`)),
-        ))
+          onClick: () => setOpen(false),
+          style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.18)', zIndex: 2147483000 },
+        }),
+        h(Details, { sprint, key: sprint.dir }),
+      ) : null)
     }
 
     return {
